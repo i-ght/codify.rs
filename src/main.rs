@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, fs::File, io::BufReader, str::FromStr};
+use std::{collections::BTreeMap, error::Error, fs::File, io::{BufReader, Write}, str::FromStr};
 use chrono::{Datelike, NaiveDate};
 use csv::StringRecord;
 
@@ -16,11 +16,11 @@ type EntryMonth = i32;
 type Entries = Vec<DayBookEntry>;
 type EntryDays = BTreeMap<EntryDay, Entries>;
 type EntryMonths = BTreeMap<EntryMonth, EntryDays>;
-type DayBookEntries = BTreeMap<EntryYear, EntryMonths>;
+type DayBook = BTreeMap<EntryYear, EntryMonths>;
 
 fn proc_record(
     record: Result<StringRecord, csv::Error>,
-    book_of_days: &mut BTreeMap<NaiveDate, Vec<DayBookEntry>>
+    days: &mut BTreeMap<NaiveDate, Vec<DayBookEntry>>
 ) -> Result<(), Box<dyn Error>> {
     let entry = record?;
     let date_str = 
@@ -56,7 +56,7 @@ fn proc_record(
         };
     
     let entries =
-        book_of_days
+        days
             .entry(date)
             .or_insert(Vec::with_capacity(8));
     entries.push(entry);
@@ -64,7 +64,7 @@ fn proc_record(
     Result::Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn construct_book_of_fate() -> Result<DayBook, Box<dyn Error>> {
     let mut book_of_days =
         BTreeMap::<NaiveDate, Vec<DayBookEntry>>::new();
 
@@ -76,14 +76,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         csv::Reader::from_reader(reader);
 
     for record in rdr.records() {
-        match proc_record(record, &mut book_of_days) {
-            Err(e) => panic!("{:#?}", e),
-            Ok(()) => ()
-        };
+        proc_record(record, &mut book_of_days)?;
     }
 
     let mut book_of_fate =
-        DayBookEntries::new();
+        DayBook::new();
 
     for (date, entries) in book_of_days {
         let (_ce, year) = date.year_ce();
@@ -106,16 +103,99 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .entry(day)
                 .or_insert(entries.to_vec());
     }
-    
-    println!("{:#?}", book_of_fate[&2024]);
+
+    Result::Ok(book_of_fate)    
+}
+
+fn month_number_to_name(month: u32) -> Option<&'static str> {
+    match month {
+        1 => Some("January"),
+        2 => Some("February"),
+        3 => Some("March"),
+        4 => Some("April"),
+        5 => Some("May"),
+        6 => Some("June"),
+        7 => Some("July"),
+        8 => Some("August"),
+        9 => Some("September"),
+        10 => Some("October"),
+        11 => Some("November"),
+        12 => Some("December"),
+        _ => None,
+    }
+}
+
+fn adoc(
+    title: &str,
+    book_of_fate: &DayBook
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut adoc: Vec<String> = Vec::with_capacity(8);
+
+    let title = format!("= {}", title);
+
+    let header = vec! [
+        &title[..],
+        ":toc: left",
+        ":toclevels: 4",
+        ""
+    ].join("\n");
+
+    adoc.push(header);
 
     for (year, months) in book_of_fate {
+        let year_fmt = format!("== {}", year);
+        adoc.push(year_fmt);
+        adoc.push(String::from(""));
+    
         for (month, days) in months {
-            for (day, entries) in days {
+            let date = NaiveDate::from_ymd_opt(0, *month as u32, 1).unwrap();
+            let month_name = month_number_to_name(date.month0()+1).unwrap();
+            let month_fmt = format!("=== {} {}", year, month_name);
+            adoc.push(month_fmt);
+            adoc.push(String::from(""));
 
+            for (day, entries) in days {
+                let day_fmt = format!("==== {} {}", month_name, day);
+                adoc.push(day_fmt);
+                adoc.push(String::from(""));
+
+                for entry in entries {
+
+                    let name_fmt = format!("===== {}", entry.name);
+                    adoc.push(name_fmt);
+                    adoc.push(String::from(""));
+                    
+                    let content = entry.content.clone().trim().to_string();
+                    let mut code_lines: Vec<String> =
+                        content
+                            .split("\n")
+                            .map(|line| format!("{} +", line))
+                            .collect();
+                    let i = code_lines.len() - 1;
+                    code_lines[i] = code_lines[i].trim_end_matches(" +").to_string();
+                    for code_line in code_lines {
+                        adoc.push(code_line);
+                    }
+                    adoc.push(String::from(""));
+                }
             }
         }
     }
-        
+    
+
+    Result::Ok(adoc)
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let book_of_fate =
+        construct_book_of_fate()?;
+    let memory_map = adoc("Memory Map", &book_of_fate)?;
+    let mut codex = File::create("codex.adoc")?;
+    for memory in memory_map {
+        codex.write_all(memory.as_bytes())?;
+        codex.write_all(b"\n")?;
+    }
+    codex.flush()?;
+
     Result::Ok(())
 }
